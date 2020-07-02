@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Title</title>
+    <base href = "http://localhost:8080/" />
+
+    <meta name="theme-color" content="#ffffff">
+
+    <script src="elm.js"></script>
+  </head>
+  <body>
+    <script>
+     var app = Elm.Main.init();
+
+    function hasUserMedia() {
+        navigator.getUserMedia = navigator.getUserMedia      ||
+                                navigator.webkitGetUserMedia ||
+                                navigator.mozGetUserMedia    ||
+                                navigator.msGetUserMedia;
+
+        return !!navigator.getUserMedia;
+    }
+
+    function hasRTCPeerConnection() {
+        window.RTCPeerConnection = window.RTCPeerConnection       ||
+                                    window.webkitRTCPeerConnection ||
+                                    window.mozRTCPeerConnection;
+
+        window.RTCSessionDescription = window.RTCSessionDescription       ||
+                                        window.webkitRTCSessionDescription ||
+                                        window.mozRTCSessionDescription;
+
+        window.RTCIceCandidate = window.RTCIceCandidate       ||
+                                    window.webkitRTCIceCandidate ||
+                                    window.mozRTCIceCandidate;
+
+        return !!window.RTCPeerConnection;
+    }
+
+     app.ports.initBasicChat.subscribe(function() {
+
+        var connection = new WebSocket('ws://localhost:9090/ws')
+
+        var myID;
+        var yourVideo = document.querySelector('video#selfCam');
+        var theirVideo = document.querySelector('video#otherCam');
+
+        var yourConnection, connectedUser, stream;
+
+        const constraints = {
+            'video': true,
+        }
+
+        connection.onopen = function () {
+            console.log("Connected");
+        };
+
+        connection.onmessage = function (message) {
+            console.log("Got message", message.data);
+            var data = JSON.parse(message.data);
+            switch(data.type) {
+                case "register":
+                    onLogin(data.success);
+                    break;
+                case "offer":
+                    onOffer(data.offer, data.from);
+                    break;
+                case "answer":
+                    onAnswer(data.answer);
+                    break;
+
+                case "candidate":
+                    onCandidate(data.candidate);
+                    break;
+                case "leave":
+                    onLeave();
+                    break;
+                default:
+                    break;
+            }
+        };
+
+        connection.onerror = function (err) {
+            console.log("Got error", err);
+        };
+
+
+        function send(message) {
+            if (connectedUser) {
+                message.to = connectedUser;
+            }
+            message.from = myID
+            connection.send(JSON.stringify(message));
+        };
+
+
+        function startConnection() {
+            if (hasUserMedia()) {
+                navigator.getUserMedia({ video: true, audio: false }, function
+                    (myStream) {
+                        stream = myStream;
+                        yourVideo.srcObject = stream
+                        if (hasRTCPeerConnection()) {
+                            setupPeerConnection(stream);
+                        } else {
+                            alert("Sorry, your browser does not support WebRTC.");
+                        }
+                    }, function (error) {
+                        console.log(error);
+                    });
+            } else {
+                alert("Sorry, your browser does not support WebRTC.");
+            }
+        }
+
+        function setupPeerConnection(stream) {
+            var configuration = {
+                "iceServers": [{ "url": "stun:stun.1.google.com:19302" }]
+            };
+
+            yourConnection = new RTCPeerConnection(configuration);
+            // Setup stream listening
+            yourConnection.addStream(stream);
+            yourConnection.onaddstream = function (e) {
+                theirVideo.srcObject = e.stream;
+            };
+            // Setup ice handling
+            yourConnection.onicecandidate = function (event) {
+                if (event.candidate) {
+                    send({
+                        type: "candidate",
+                        candidate: event.candidate
+                    });
+                }
+            };
+        }
+        function startPeerConnection(user) {
+            connectedUser = user;
+            // Begin the offer
+            yourConnection.createOffer(function (offer) {
+                send({
+                    type: "offer",
+                    offer: offer
+                });
+                yourConnection.setLocalDescription(offer);
+            }, function (error) {
+                alert("An error has occurred.");
+            });
+        };
+
+        function onLogin(success) {
+            if (success === false) {
+                alert("Login unsuccessful, please try a different name.");
+            } else {
+                console.log("Login success")
+                // Get the plumbing ready for a call
+                startConnection();
+            }
+        };
+
+        function onOffer(offer, name) {
+            connectedUser = name;
+            console.log("Offer from ", connectedUser)
+            yourConnection.setRemoteDescription(new
+                RTCSessionDescription(offer));
+            yourConnection.createAnswer(function (answer) {
+                yourConnection.setLocalDescription(answer);
+                send({
+                    type: "answer",
+                    answer: answer
+                });
+            }, function (error) {
+                alert("An error has occurred");
+            });
+        }
+
+        function onAnswer(answer) {
+            yourConnection.setRemoteDescription(new
+                RTCSessionDescription(answer));
+        }
+
+        function onCandidate(candidate) {
+            console.log("Got candidate")
+            yourConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        }
+
+        function onLeave() {
+            connectedUser = null;
+            theirVideo.src = null;
+            yourConnection.close();
+            yourConnection.onicecandidate = null;
+            yourConnection.onaddstream = null;
+            setupPeerConnection(stream);
+        }
+
+        app.ports.register.subscribe(function(id) {
+            var msg = {type:"register", id:id}
+            myID = id
+            send(msg)
+        });
+
+        app.ports.call.subscribe(function(id) {
+            startPeerConnection(id);
+        });
+
+         /* app.ports.end.subscribe(function(id) { */
+         /* send({ */
+         /* type: "leave" */
+         /* }); */
+         /* onLeave(); */
+         /* }); */
+
+     });
+     app.ports.initCanvasBroadcast.subscribe(function(id) {
+         /* id always = "111" */
+
+         /* Canvas stuff */
+         var video = document.getElementById('cam');
+         var canvas = document.getElementById('canvas');
+         console.log("canvas",canvas)
+         var context = canvas.getContext('2d');
+
+         // Create gradient
+         var gradient = context.createLinearGradient(0, 0, canvas.width, 0);
+         gradient.addColorStop("0"," magenta");
+         gradient.addColorStop("0.5", "blue");
+         gradient.addColorStop("1.0", "red");
+
+         function renderFrame() {
+             requestAnimationFrame(renderFrame);
+             canvas.width = canvas.scrollWidth;
+             canvas.height = canvas.scrollHeight;
+             if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                 var videoSize = { width: video.videoWidth, height: video.videoHeight };
+                 var canvasSize = { width: canvas.width, height: canvas.height };
+                 var renderSize = calculateSize(videoSize, canvasSize);
+                 var xOffset = (canvasSize.width - renderSize.width) / 2;
+                 context.drawImage(video, xOffset, 0, renderSize.width, renderSize.height);
+                 // Fill with gradient
+                 context.fillStyle = gradient;
+                 context.font = "100px Verdana";
+                 context.fillText("Big smile!", 200, 90);
+             }
+         }
+
+         function calculateSize(srcSize, dstSize) {
+             var srcRatio = srcSize.width / srcSize.height;
+             var dstRatio = dstSize.width / dstSize.height;
+             if (dstRatio > srcRatio) {
+                 return {
+                     width:  dstSize.height * srcRatio,
+                     height: dstSize.height
+                 };
+             } else {
+                 return {
+                     width:  dstSize.width,
+                     height: dstSize.width / srcRatio
+                 };
+             }
+         }
+
+         if (navigator.mediaDevices.getUserMedia) {
+             var successCallback = function(stream) {
+                 video.srcObject = stream;
+             };
+             var errorCallback = function(error) {
+                 console.log(error);
+             };
+             navigator.mediaDevices.getUserMedia({
+                 audio: false,
+                 video: { facingMode: 'environment' }
+             }).then(successCallback, errorCallback);
+             requestAnimationFrame(renderFrame);
+         }
+
+         /* WebRTC stuff  */
+         var connection = new WebSocket('ws://localhost:9090/ws')
+
+         var yourConnection, connectedUser, stream;
+
+         const constraints = {
+             'video': true,
+         }
+
+         connection.onopen = function () {
+             console.log("Connected");
+             var msg = {type:"register", id:id}
+             myID = id
+             send(msg)
+         };
+
+         connection.onmessage = function (message) {
+             console.log("Got message", message.data);
+             var data = JSON.parse(message.data);
+             switch(data.type) {
+                 case "register":
+                     onLogin(data.success);
+                     break;
+                 case "offer":
+                     onOffer(data.offer, data.from);
+                     break;
+                 case "answer":
+                     onAnswer(data.answer);
+                     break;
+
+                 case "candidate":
+                     onCandidate(data.candidate);
+                     break;
+                 case "leave":
+                     onLeave();
+                     break;
+                 default:
+                     break;
+             }
+         };
+
+         connection.onerror = function (err) {
+             console.log("Got error", err);
+         };
+
+         function startConnection() {
+             if (hasUserMedia()) {
+                 stream = canvas.captureStream();
+
+                 console.log('Got stream from canvas');
+
+                 if (hasRTCPeerConnection()) {
+                     setupPeerConnection(stream);
+                 } else {
+                     alert("Sorry, your browser does not support WebRTC.");
+                 }
+
+             } else {
+                 alert("Sorry, your browser does not support WebRTC.");
+             }
+         }
+
+         function setupPeerConnection(stream) {
+             var configuration = {
+                 "iceServers": [{ "url": "stun:stun.1.google.com:19302" }]
+             };
+
+             yourConnection = new RTCPeerConnection(configuration);
+             // Setup stream listening
+             yourConnection.addStream(stream);
+             // Setup ice handling
+             yourConnection.onicecandidate = function (event) {
+                 if (event.candidate) {
+                     send({
+                         type: "candidate",
+                         candidate: event.candidate
+                     });
+                 }
+             };
+         }
+
+        function onLogin(success) {
+            if (success === false) {
+                alert("Login unsuccessful, please try a different name.");
+            } else {
+                console.log("Login success")
+                // Get the plumbing ready for a call
+                startConnection();
+            }
+        };
+
+        function onOffer(offer, name) {
+            connectedUser = name;
+            console.log("Offer from ", connectedUser)
+            yourConnection.setRemoteDescription(new
+                RTCSessionDescription(offer));
+            yourConnection.createAnswer(function (answer) {
+                yourConnection.setLocalDescription(answer);
+                send({
+                    type: "answer",
+                    answer: answer
+                });
+            }, function (error) {
+                alert("An error has occurred");
+            });
+        }
+
+        function onAnswer(answer) {
+            yourConnection.setRemoteDescription(new
+                RTCSessionDescription(answer));
+        }
+
+        function onCandidate(candidate) {
+            console.log("Got candidate")
+            yourConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        }
+
+        function onLeave() {
+            connectedUser = null;
+            theirVideo.src = null;
+            yourConnection.close();
+            yourConnection.onicecandidate = null;
+            yourConnection.onaddstream = null;
+            setupPeerConnection(stream);
+        }
+
+
+         function send(message) {
+             if (connectedUser) {
+                 message.to = connectedUser;
+             }
+             message.from = "111"
+             connection.send(JSON.stringify(message));
+         };
+     });
+
+     app.ports.initCanvasConsume.subscribe(function() {
+         var connection = new WebSocket('ws://localhost:9090/ws')
+
+         var video = document.querySelector('video#videoConsume');
+         var yourConnection, connectedUser, stream;
+
+         const constraints = {
+             'video': true,
+         }
+         var id = "222"
+
+         connection.onopen = function () {
+             console.log("Connected");
+             var msg = {type:"register", id:id}
+             myID = id
+             send(msg)
+         };
+
+         connection.onmessage = function (message) {
+             console.log("Got message", message.data);
+             var data = JSON.parse(message.data);
+             switch(data.type) {
+                 case "register":
+                     onLogin(data.success);
+                     break;
+                 case "offer":
+                     onOffer(data.offer, data.from);
+                     break;
+                 case "answer":
+                     onAnswer(data.answer);
+                     break;
+
+                 case "candidate":
+                     onCandidate(data.candidate);
+                     break;
+                 case "leave":
+                     onLeave();
+                     break;
+                 default:
+                     break;
+             }
+         };
+
+         connection.onerror = function (err) {
+             console.log("Got error", err);
+         };
+
+
+         function startConnection() {
+             if (hasUserMedia()) {
+                 /* NOTE WE DONT actually use this stream but calling create offer without calling addStream causes an error*/
+                 navigator.getUserMedia({ video: true, audio: false }, function
+                     (myStream) {
+                         stream = myStream;
+                         if (hasRTCPeerConnection()) {
+                             setupPeerConnection(stream);
+                         } else {
+                             alert("Sorry, your browser does not support WebRTC.");
+                         }
+                     }, function (error) {
+                         console.log(error);
+                     });
+             } else {
+                 alert("Sorry, your browser does not support WebRTC.");
+             }
+         }
+
+        function setupPeerConnection(stream) {
+            var configuration = {
+                "iceServers": [{ "url": "stun:stun.1.google.com:19302" }]
+            };
+
+            yourConnection = new RTCPeerConnection(configuration);
+            // Setup stream listening
+
+            yourConnection.addStream(stream);
+            yourConnection.onaddstream = function (e) {
+                console.log("got stream to add")
+                video.srcObject = e.stream;
+            };
+            // Setup ice handling
+            yourConnection.onicecandidate = function (event) {
+                if (event.candidate) {
+                    send({
+                        type: "candidate",
+                        candidate: event.candidate
+                    });
+                }
+            };
+        }
+
+        function kickOffConnection(user) {
+            connectedUser = user;
+            console.log("connected user")
+            // Begin the offer
+            yourConnection.createOffer(function (offer) {
+                send({
+                    type: "offer",
+                    offer: offer
+                });
+                yourConnection.setLocalDescription(offer);
+            }, function (error) {
+                alert("An error has occurred.");
+            });
+        };
+
+        function onLogin(success) {
+            if (success === false) {
+                alert("Login unsuccessful, please try a different name.");
+            } else {
+                console.log("Login success")
+                // Get the plumbing ready for a call
+                startConnection();
+            }
+        };
+
+        function onOffer(offer, name) {
+            connectedUser = name;
+            console.log("Offer from ", connectedUser)
+            yourConnection.setRemoteDescription(new
+                RTCSessionDescription(offer));
+            yourConnection.createAnswer(function (answer) {
+                yourConnection.setLocalDescription(answer);
+                send({
+                    type: "answer",
+                    answer: answer
+                });
+            }, function (error) {
+                alert("An error has occurred");
+            });
+        }
+
+        function onAnswer(answer) {
+            yourConnection.setRemoteDescription(new
+                RTCSessionDescription(answer));
+        }
+
+        function onCandidate(candidate) {
+            console.log("Got candidate")
+            yourConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        }
+
+        function onLeave() {
+            connectedUser = null;
+            theirVideo.src = null;
+            yourConnection.close();
+            yourConnection.onicecandidate = null;
+            yourConnection.onaddstream = null;
+            setupPeerConnection(stream);
+        }
+
+         function send(message) {
+             if (connectedUser) {
+                 message.to = connectedUser;
+             }
+             message.from = "222"
+             connection.send(JSON.stringify(message));
+         };
+
+
+         app.ports.basicCanvasConsumeJoin.subscribe(function(id) {
+             kickOffConnection("111");
+         });
+     });
+    </script>
+
+  </body>
+</html>
